@@ -1,20 +1,22 @@
+from datetime import timezone
+from email.utils import format_datetime
 from pathlib import Path
 from quart import utils
 from telegram_to_rss.models import Feed, FeedEntry
 from tortoise.query_utils import Prefetch
 from telegram_to_rss.config import base_url
 from telegram_to_rss.poll_telegram import parse_feed_entry_id
-import re
+from telegram_to_rss.render import clean_title, entry_title, render_entry  # noqa: F401
 from telegram_to_rss.client import telethon_dialog_id_to_tg_id
 import xml.etree.ElementTree as ET
 import logging
 
-CLEAN_TITLE = re.compile("<.*?>")
 
-
-def clean_title(raw_html):
-    cleantext = re.sub(CLEAN_TITLE, "", raw_html).replace("\n", " ").strip()
-    return cleantext
+def rfc822(date) -> str:
+    """RSS 2.0 wants RFC 822 dates; ISO 8601 trips up several readers."""
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=timezone.utc)
+    return format_datetime(date)
 
 
 def generate_feed(feed_render_dir: Path, feed: Feed):
@@ -27,12 +29,8 @@ def generate_feed(feed_render_dir: Path, feed: Feed):
     rss_feed_el = ET.SubElement(rss_root_el, "channel")
 
     ET.SubElement(rss_feed_el, "title").text = feed.name
-    ET.SubElement(rss_feed_el, "pubDate").text = feed.last_update.isoformat()
-    ET.SubElement(
-        rss_feed_el,
-        "link",
-        {"href": feed_url},
-    )
+    ET.SubElement(rss_feed_el, "pubDate").text = rfc822(feed.last_update)
+    ET.SubElement(rss_feed_el, "link").text = feed_url
     ET.SubElement(rss_feed_el, "description").text = feed.name
 
     for feed_entry in feed.entries:
@@ -41,49 +39,20 @@ def generate_feed(feed_render_dir: Path, feed: Feed):
             telethon_dialog_id_to_tg_id(feed_id), entry_id
         )
 
+        def message_url(message_id: int, feed_id=feed_id) -> str:
+            return "https://t.me/c/{}/{}".format(
+                telethon_dialog_id_to_tg_id(feed_id), message_id
+            )
+
         rss_item_el = ET.SubElement(rss_feed_el, "item")
 
-        ET.SubElement(rss_item_el, "guid").text = feed_entry_url
-
-        message_text = clean_title(feed_entry.message)
-        title = message_text[:100]
-        ET.SubElement(rss_item_el, "title").text = title
-
-        media_content = ""
-        media_download_failure = False
-        media_too_large = False
-
-        # processing mediafiles
-        for media_path in feed_entry.media:
-            if media_path == "FAIL":
-                media_download_failure = True
-            elif media_path == "TOO_LARGE":
-                media_too_large = True
-            else:
-                media_url = "{}/static/{}".format(base_url, media_path)
-
-                # checking file type
-                if media_path.endswith(('.jpg', '.png', '.gif')):
-                    media_content += '<br /><img src="{}" alt="media"/>'.format(media_url)
-                elif media_path.endswith('.mp4'):
-                    media_content += (
-                        '<br /><video controls poster="{}" style="max-width:100%;">'
-                        '<source src="{}" type="video/mp4">'
-                        'Your browser does not support the video tag.</video>'
-                    ).format(media_url, media_url)
-
-        # creating feed with text and media
-        content = feed_entry.message.replace("\n", "<br />") + media_content
-        if feed_entry.has_unsupported_media:
-            content += "<br /><strong>This message has unsupported attachment. Open Telegram to view it.</strong>"
-        if media_download_failure:
-            content += "<br /><strong>Downloading some of the media for this message failed. Open Telegram to view it.</strong>"
-        if media_too_large:
-            content += "<br /><strong>The video is too large.</strong>"
-
-        ET.SubElement(rss_item_el, "description").text = content
-        ET.SubElement(rss_item_el, "pubDate").text = feed_entry.date.isoformat()
-        ET.SubElement(rss_item_el, "link", {"href": feed_entry_url}).text = feed_entry_url
+        ET.SubElement(rss_item_el, "guid", {"isPermaLink": "true"}).text = feed_entry_url
+        ET.SubElement(rss_item_el, "title").text = entry_title(feed_entry)
+        ET.SubElement(rss_item_el, "description").text = render_entry(
+            feed_entry, message_url=message_url, base_url=base_url
+        )
+        ET.SubElement(rss_item_el, "pubDate").text = rfc822(feed_entry.date)
+        ET.SubElement(rss_item_el, "link").text = feed_entry_url
 
     final_feed_file = feed_render_dir.joinpath("{}.xml".format(feed.id))
 

@@ -16,6 +16,9 @@ class FeedEntry(Model):
     date = fields.DatetimeField()
     media = fields.JSONField(default=[])
     has_unsupported_media = fields.BooleanField(default=False)
+    # Structured description of polls, link previews, locations, forwards, ...
+    # See telegram_to_rss/attachments.py
+    extra = fields.JSONField(default=dict)
 
 
 @post_delete(FeedEntry)

@@ -1,29 +1,300 @@
-{% extends "base.html" %} {% block head %} {% for feed in feeds %}
+{% extends "base.html" %}
+
+{% block head %}
+{% for feed in feeds %}
 <link
   rel="alternate"
   type="application/rss+xml"
   title="{{ feed.name }}"
   href="/static/{{ feed.id }}.xml"
 />
-{% endfor %} {% endblock %} {% block content %}
-<div>
-  <p>
-    Logged in as {{ user.first_name }} {{ user.last_name }} ({{ user.username
-    }}).
-  </p>
-  <p>Give it a few minutes on first start to fetch the data.</p>
-  <p>Available feeds:</p>
-  <ul>
-    {% for feed in feeds %}
-    <li>
-      <p>
-        <a href="/static/{{ feed.id }}.xml">{{ feed.name }}</a>
-      </p>
-      <p>Last update: {{ feed.last_update }}</p>
-    </li>
+{% endfor %}
+<style>
+  .status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .status strong {
+    display: block;
+  }
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    margin-right: 6px;
+  }
+  .dot.busy {
+    background: var(--accent);
+  }
+  .dot.bad {
+    background: var(--danger);
+  }
+  .banner {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-top: 12px;
+    font-size: 0.9rem;
+  }
+  .banner summary {
+    cursor: pointer;
+  }
+  .banner pre {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8rem;
+  }
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 18px 0 10px;
+  }
+  .tools input {
+    flex: 1;
+    min-width: 0;
+    min-height: 42px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  .feeds {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .feed {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .avatar {
+    flex: none;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    font-weight: 650;
+  }
+  .feed .info {
+    flex: 1;
+    min-width: 0;
+  }
+  .feed .name {
+    display: block;
+    font-weight: 600;
+    color: var(--text);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .feed .name:hover {
+    color: var(--accent);
+  }
+  .feed .actions {
+    display: flex;
+    gap: 6px;
+    flex: none;
+  }
+  .empty {
+    text-align: center;
+    padding: 36px 18px;
+  }
+  .empty h2 {
+    margin: 12px 0 4px;
+    font-size: 1.1rem;
+  }
+  [hidden] {
+    display: none !important;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="card status">
+  <div>
+    {% if user %}
+    <strong>{{ user.first_name or "" }} {{ user.last_name or "" }}</strong>
+    <span class="muted"
+      >{% if user.username %}@{{ user.username }} · {% endif %}logged in</span
+    >
     {% else %}
-    <p>No feeds available.</p>
-    {% endfor %}
-  </ul>
+    <strong>Connecting to Telegram…</strong>
+    <span class="muted">This usually takes a few seconds.</span>
+    {% endif %}
+  </div>
+  <div class="muted" role="status">
+    {% if sync.syncing %}
+    <span class="dot busy"></span>Syncing now…
+    {% elif sync.last_error %}
+    <span class="dot bad"></span>Last sync failed
+    {% elif sync.last_success %}
+    <span class="dot"></span>Synced
+    <time datetime="{{ sync.last_success.isoformat() }}"></time>
+    {% else %}
+    <span class="dot busy"></span>Waiting for first sync…
+    {% endif %}
+  </div>
+  {% if sync.last_error %}
+  <details class="banner" style="flex-basis: 100%">
+    <summary>Something went wrong. It will retry automatically.</summary>
+    <pre>{{ sync.last_error }}</pre>
+  </details>
+  {% endif %}
+</section>
+
+{% if feeds %}
+<div class="tools">
+  <input
+    id="search"
+    type="search"
+    placeholder="Search {{ feeds|length }} feed{{ '' if feeds|length == 1 else 's' }}"
+    aria-label="Search feeds"
+    autocomplete="off"
+  />
+  <a class="btn primary" href="/feeds.opml" download
+    >Download OPML</a
+  >
 </div>
+
+<ul class="feeds" id="feeds">
+  {% for feed in feeds %}
+  <li class="feed" data-name="{{ feed.name|lower }}">
+    <div class="avatar" style="background: hsl({{ feed.id|abs % 360 }} 45% 45%)">
+      {{ (feed.name or "?")[:1]|upper }}
+    </div>
+    <div class="info">
+      <a class="name" href="/static/{{ feed.id }}.xml">{{ feed.name }}</a>
+      <span class="muted"
+        >{{ feed.entry_count }} post{{ "" if feed.entry_count == 1 else "s" }}
+        · updated
+        <time datetime="{{ feed.last_update.isoformat() }}"></time
+      ></span>
+    </div>
+    <div class="actions">
+      <button
+        class="btn copy"
+        type="button"
+        data-url="{{ public_url }}/static/{{ feed.id }}.xml"
+      >
+        Copy link
+      </button>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+<p class="muted" id="no-match" hidden>No feeds match your search.</p>
+{% else %}
+<section class="card empty">
+  <span class="spinner" aria-hidden="true"></span>
+  <h2>Building your feeds</h2>
+  <p class="muted">
+    The first sync can take a few minutes. This page updates by itself.
+  </p>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    // --- search -------------------------------------------------------
+    const search = document.getElementById("search");
+    const rows = document.querySelectorAll("#feeds .feed");
+    const noMatch = document.getElementById("no-match");
+    if (search) {
+      search.addEventListener("input", () => {
+        const query = search.value.trim().toLowerCase();
+        let shown = 0;
+        rows.forEach((row) => {
+          const match = row.dataset.name.includes(query);
+          row.hidden = !match;
+          if (match) shown++;
+        });
+        noMatch.hidden = shown !== 0;
+      });
+    }
+
+    // --- copy link (clipboard API needs HTTPS, so fall back for LAN use) --
+    function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+      }
+      return new Promise((resolve, reject) => {
+        const box = document.createElement("textarea");
+        box.value = text;
+        box.style.position = "fixed";
+        box.style.opacity = "0";
+        document.body.appendChild(box);
+        box.select();
+        try {
+          document.execCommand("copy") ? resolve() : reject();
+        } catch (error) {
+          reject(error);
+        } finally {
+          box.remove();
+        }
+      });
+    }
+    document.querySelectorAll(".copy").forEach((button) => {
+      button.addEventListener("click", () => {
+        copyText(button.dataset.url).then(
+          () => flash(button, "Copied"),
+          () => window.prompt("Copy this feed link:", button.dataset.url)
+        );
+      });
+    });
+    function flash(button, text) {
+      const original = button.textContent;
+      button.textContent = text;
+      setTimeout(() => (button.textContent = original), 1500);
+    }
+
+    // --- refresh by itself when something changed on the server -----------
+    const known = {
+      feeds: {{ feeds|length }},
+      syncing: {{ sync.syncing|tojson }},
+      lastSuccess: {{ (sync.last_success.isoformat() if sync.last_success else None)|tojson }},
+    };
+    // Python and JSON format the same instant differently, so compare as times.
+    const sameTime = (a, b) =>
+      a && b ? new Date(a).getTime() === new Date(b).getTime() : a === b;
+    setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        const response = await fetch("/status.json", { cache: "no-store" });
+        const status = await response.json();
+        if (
+          !status.logged_in ||
+          status.feeds !== known.feeds ||
+          status.syncing !== known.syncing ||
+          !sameTime(status.last_success, known.lastSuccess)
+        ) {
+          window.location.reload();
+        }
+      } catch (error) {
+        /* server restarting; try again next tick */
+      }
+    }, 5000);
+  })();
+</script>
 {% endblock %}

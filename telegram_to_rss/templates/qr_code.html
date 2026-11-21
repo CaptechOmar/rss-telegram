@@ -1,14 +1,88 @@
-{% extends "base.html" %} {% block content %}
-<div>
-  <p>1. In Telegram on your phone go to Settings -> Devices.</p>
-  <p>2. Click on "Link Desktop Device" and scan this QR code.</p>
-  <p>3. Give it a few seconds before you panic and think it does not work.</p>
-  <p>4. If it does not work indeed, check the logs.</p>
-  <p>
-    <img src="{{ qr_code }}" width="80%" />
-  </p>
-</div>
+{% extends "base.html" %}
+
+{% block title %}Log in · Telegram to RSS{% endblock %}
+
+{% block head %}
+<style>
+  .login {
+    display: grid;
+    gap: 24px;
+    align-items: center;
+  }
+  @media (min-width: 640px) {
+    .login {
+      grid-template-columns: 1fr auto;
+    }
+  }
+  .login ol {
+    margin: 12px 0 0;
+    padding-left: 20px;
+  }
+  .login li {
+    margin-bottom: 6px;
+  }
+  .qr {
+    justify-self: center;
+    background: #fff;
+    padding: 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    line-height: 0;
+  }
+  .qr img {
+    width: 240px;
+    height: 240px;
+    image-rendering: pixelated;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<section class="card login">
+  <div>
+    <h2 style="margin: 0; font-size: 1.15rem">Link your Telegram account</h2>
+    <ol>
+      <li>Open Telegram on your phone.</li>
+      <li>Go to <strong>Settings → Devices → Link Desktop Device</strong>.</li>
+      <li>Scan this QR code.</li>
+    </ol>
+    <p class="muted" role="status">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="state">Waiting for you to scan…</span>
+    </p>
+    <p class="muted">
+      Nothing happening after a scan? Give it a few seconds, then check the
+      container logs.
+    </p>
+  </div>
+  <div class="qr">
+    <img id="qr" src="{{ qr_code }}" alt="Telegram login QR code" />
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
 <script>
-  setTimeout(() => window.location.reload(), 1000);
+  (function () {
+    const image = document.getElementById("qr");
+    const state = document.getElementById("state");
+    // Only touch the image when the code actually changed, so it doesn't flicker.
+    setInterval(async () => {
+      try {
+        const response = await fetch("/status.json", { cache: "no-store" });
+        const status = await response.json();
+        if (status.logged_in) {
+          state.textContent = "Logged in! Loading your feeds…";
+          window.location.reload();
+        } else if (status.qr && status.qr !== image.getAttribute("src")) {
+          image.setAttribute("src", status.qr);
+        } else if (!status.qr) {
+          state.textContent = "Connecting to Telegram…";
+        }
+      } catch (error) {
+        state.textContent = "Can't reach the server, retrying…";
+      }
+    }, 2000);
+  })();
 </script>
 {% endblock %}

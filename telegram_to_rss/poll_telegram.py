@@ -1,5 +1,12 @@
 from telegram_to_rss.client import TelegramToRssClient, custom, types
 from telegram_to_rss.models import Feed, FeedEntry
+from telegram_to_rss.attachments import (
+    classify_document,
+    describe_context,
+    describe_media,
+    is_unsafe_to_host,
+    merge_extra,
+)
 from tortoise.expressions import Q
 from tortoise.transactions import atomic
 from pathlib import Path
@@ -12,6 +19,7 @@ class TelegramPoller:
     _new_feed_limit: int
     _static_path: Path
     _max_video_size: int
+    _max_file_size: int
 
     def __init__(
         self,
@@ -20,12 +28,14 @@ class TelegramPoller:
         new_feed_limit: int,
         static_path: Path,
         max_video_size: int,
+        max_file_size: int = 10 * 1024 * 1024,
     ) -> None:
         self._client = client
         self._message_limit = message_limit
         self._new_feed_limit = new_feed_limit
         self._static_path = static_path
         self._max_video_size = max_video_size
+        self._max_file_size = max_file_size
 
 
     async def fetch_dialogs(self):
@@ -144,43 +154,36 @@ class TelegramPoller:
                 if dialog_message.text is None:
                     continue
 
-                dialog_message.downloaded_media = []
+                is_album_member = (
+                    dialog_message.grouped_id is not None
+                    and len(filtered_dialog_messages) > 0
+                    and dialog_message.grouped_id
+                    == filtered_dialog_messages[-1].grouped_id
+                )
 
-                if (
-                    dialog_message.grouped_id is None
-                    or len(filtered_dialog_messages) == 0
-                    or dialog_message.grouped_id != filtered_dialog_messages[-1].grouped_id
-                ):
+                if not is_album_member:
+                    dialog_message.downloaded_media = []
+                    dialog_message.extra = {
+                        **describe_context(dialog_message),
+                        "media_meta": {},
+                        "skipped_files": [],
+                    }
                     filtered_dialog_messages.append(dialog_message)
-                else:
-                    if len(dialog_message.text) > len(filtered_dialog_messages[-1].text):
-                        filtered_dialog_messages[-1].text = dialog_message.text
+                elif len(dialog_message.text) > len(filtered_dialog_messages[-1].text):
+                    filtered_dialog_messages[-1].text = dialog_message.text
 
                 last_processed_message = filtered_dialog_messages[-1]
+                merge_extra(last_processed_message.extra, describe_media(dialog_message))
 
                 if dialog_message.photo:
-                    await self._download_media(dialog_message, last_processed_message, feed, 'photo')
+                    await self._download_media(
+                        dialog_message, last_processed_message, feed, "photo"
+                    )
 
                 if isinstance(dialog_message.media, types.MessageMediaDocument):
-                    document = dialog_message.media.document
-                    mime_type = getattr(document, 'mime_type', None)
-                    if mime_type:
-                        if mime_type.startswith("video/"):
-                            video_size = document.size
-                            if video_size > self._max_video_size:
-                                logging.info(
-                                    f"Video in message {dialog_message.id} is too large ({video_size} bytes). Skipping download."
-                                )
-                                last_processed_message.downloaded_media.append("TOO_LARGE")
-                                continue
-                            await self._download_media(dialog_message, last_processed_message, feed, 'video')
-                        elif mime_type.startswith("image/"):
-                            await self._download_media(dialog_message, last_processed_message, feed, 'image')
-                        else:
-                            logging.debug(
-                                f"Unsupported media type '{mime_type}' in message {dialog_message.id}"
-                            )
-                            last_processed_message.has_unsupported_media = True
+                    await self._process_document(
+                        dialog_message, last_processed_message, feed
+                    )
 
             except Exception as e:
                 logging.error(f"Error processing message {dialog_message.id}: {e}", exc_info=True)
@@ -189,6 +192,11 @@ class TelegramPoller:
         feed_entries: list[FeedEntry] = []
         for dialog_message in filtered_dialog_messages:
             feed_entry_id = to_feed_entry_id(feed, dialog_message)
+            extra = {
+                key: value
+                for key, value in dialog_message.extra.items()
+                if value not in ({}, [], None)
+            }
             feed_entries.append(
                 FeedEntry(
                     id=feed_entry_id,
@@ -196,12 +204,69 @@ class TelegramPoller:
                     message=dialog_message.text,
                     date=dialog_message.date,
                     media=dialog_message.downloaded_media,
-                    has_unsupported_media=getattr(dialog_message, 'has_unsupported_media', False),
+                    has_unsupported_media=bool(extra.get("unsupported")),
+                    extra=extra,
                 )
             )
         return feed_entries
 
+    async def _process_document(self, dialog_message, target, feed):
+        """Decide per document type whether to download it, and record details."""
+        document = dialog_message.media.document
+        if not isinstance(document, types.Document):
+            target.extra["unsupported"] = True
+            return
+
+        info = classify_document(document)
+        kind = info["kind"]
+        size = info["size"] or 0
+
+        if kind == "animated_sticker":
+            # Lottie animation, nothing a feed reader can show: keep the emoji.
+            target.extra["sticker"] = info.get("emoji") or ""
+            return
+
+        if is_unsafe_to_host(info):
+            logging.info(
+                f"Not hosting {info['name']} ({info['mime']}) from message {dialog_message.id}"
+            )
+            target.extra["skipped_files"].append(
+                {"name": info["name"], "size": size, "reason": "not hosted for safety"}
+            )
+            return
+
+        if kind == "video":
+            if size > self._max_video_size:
+                logging.info(
+                    f"Video in message {dialog_message.id} is too large ({size} bytes). Skipping download."
+                )
+                target.downloaded_media.append("TOO_LARGE")
+                return
+        elif kind in ("audio", "voice", "file"):
+            if self._max_file_size <= 0 or size > self._max_file_size:
+                target.extra["skipped_files"].append(
+                    {
+                        "name": info["name"] or info.get("title"),
+                        "size": size,
+                        "reason": (
+                            "file downloads are turned off"
+                            if self._max_file_size <= 0
+                            else "too large"
+                        ),
+                    }
+                )
+                return
+
+        saved_name = await self._download_media(dialog_message, target, feed, kind)
+        if saved_name:
+            target.extra["media_meta"][saved_name] = {
+                key: info[key]
+                for key in ("kind", "name", "size", "title", "performer")
+                if info.get(key) is not None
+            }
+
     async def _download_media(self, dialog_message, last_processed_message, feed, media_type):
+        """Download one attachment. Returns the saved file name, or None on failure."""
         try:
             feed_entry_media_id = "{}-{}".format(
                 to_feed_entry_id(feed, dialog_message),
@@ -221,13 +286,16 @@ class TelegramPoller:
             res_path = await dialog_message.download_media(
                 file=media_path, progress_callback=progress_callback
             )
-            last_processed_message.downloaded_media.append(Path(res_path).name)
+            saved_name = Path(res_path).name
+            last_processed_message.downloaded_media.append(saved_name)
             logging.debug(f"Downloaded {media_type} to {res_path}")
+            return saved_name
         except Exception as e:
             logging.warning(
                 f"Downloading {media_type} failed with {e} for message {dialog_message.id} {dialog_message.date} {dialog_message.text}",
             )
             last_processed_message.downloaded_media.append("FAIL")
+            return None
 
 
 def to_feed_entry_id(feed: Feed, dialog_message: custom.Message):

@@ -1,14 +1,195 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{% block title %}Telegram to RSS{% endblock %}</title>
     <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css"
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232481cc'/%3E%3Ccircle cx='9.5' cy='22.5' r='2.5' fill='white'/%3E%3Cpath d='M8 14a10 10 0 0 1 10 10M8 8a16 16 0 0 1 16 16' fill='none' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"
     />
-    <title>Telegram to RSS</title>
+    <style>
+      :root {
+        --bg: #f4f6f9;
+        --surface: #ffffff;
+        --text: #14202b;
+        --muted: #627384;
+        --border: #e1e7ee;
+        --accent: #2481cc;
+        --accent-text: #ffffff;
+        --accent-soft: #e8f2fb;
+        --danger: #b42318;
+        --danger-bg: #fdeceb;
+        --ok: #1a7f4b;
+        --radius: 14px;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e141b;
+          --surface: #161f29;
+          --text: #e6edf3;
+          --muted: #8b9bab;
+          --border: #243140;
+          --accent: #4aa3e8;
+          --accent-text: #06121c;
+          --accent-soft: #1a2c3d;
+          --danger: #ff9a90;
+          --danger-bg: #3a1c1b;
+          --ok: #4cd08a;
+          --shadow: none;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      a {
+        color: var(--accent);
+      }
+      .wrap {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 0 16px 48px;
+      }
+      .top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 20px 0 16px;
+      }
+      .top svg {
+        flex: none;
+      }
+      .top h1 {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 16px 18px;
+        margin-bottom: 14px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 38px;
+        padding: 0 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+        font-size: 0.9rem;
+        font-weight: 550;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .btn:hover {
+        background: var(--accent-soft);
+      }
+      .btn.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-text);
+      }
+      .btn.primary:hover {
+        filter: brightness(1.08);
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+        display: inline-block;
+        vertical-align: -3px;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation-duration: 3s;
+        }
+      }
+    </style>
     {% block head %}{% endblock %}
   </head>
   <body>
-    {% block content %}{% endblock %}
+    <div class="wrap">
+      <header class="top">
+        <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="var(--accent)" />
+          <circle cx="9.5" cy="22.5" r="2.5" fill="#fff" />
+          <path
+            d="M8 14a10 10 0 0 1 10 10M8 8a16 16 0 0 1 16 16"
+            fill="none"
+            stroke="#fff"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+        </svg>
+        <h1>Telegram to RSS</h1>
+      </header>
+      {% block content %}{% endblock %}
+    </div>
+    <script>
+      // "5 minutes ago" for every <time datetime="...">; full date on hover.
+      (function () {
+        const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+        const units = [
+          ["year", 31536000],
+          ["month", 2592000],
+          ["day", 86400],
+          ["hour", 3600],
+          ["minute", 60],
+        ];
+        function relative(date) {
+          const seconds = (date - Date.now()) / 1000;
+          for (const [unit, size] of units) {
+            if (Math.abs(seconds) >= size) {
+              return rtf.format(Math.round(seconds / size), unit);
+            }
+          }
+          return "just now";
+        }
+        function update() {
+          document.querySelectorAll("time[datetime]").forEach((el) => {
+            const date = new Date(el.getAttribute("datetime"));
+            if (isNaN(date)) return;
+            el.textContent = relative(date);
+            el.title = date.toLocaleString();
+          });
+        }
+        update();
+        setInterval(update, 30000);
+      })();
+    </script>
+    {% block scripts %}{% endblock %}
   </body>
 </html>
