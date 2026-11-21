@@ -19,7 +19,7 @@ Generate an RSS feed from your Telegram chats. You digital minimalism friend.
    ```yaml
    services:
       telegram-to-rss:
-         image: aigoncharov/telegram-to-rss:latest
+         image: ghcr.io/captechomar/rss-telegram:latest
          container_name: telegram-to-rss
          restart: always
          environment:
