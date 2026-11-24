@@ -14,8 +14,14 @@ class TelegramToRssClient:
     def __init__(
         self, session_path: str, api_id: int, api_hash: str, password: str | None = None
     ):
+        # connection_retries=None: keep trying to (re)connect instead of giving
+        # up after 5 attempts, which left the client disconnected for good.
         self._telethon = TelegramClient(
-            session=session_path, api_id=api_id, api_hash=api_hash
+            session=session_path,
+            api_id=api_id,
+            api_hash=api_hash,
+            connection_retries=None,
+            retry_delay=5,
         )
         self._telethon.parse_mode = "html"
         self._password = password
@@ -38,6 +44,15 @@ class TelegramToRssClient:
 
         self._qr_code_url = None
         self._user = await self._telethon.get_me()
+
+    async def ensure_connected(self):
+        """Reconnect (and log in again if needed) after a dropped connection."""
+        if not self._telethon.is_connected():
+            logging.warning("Telegram connection lost, reconnecting")
+            await self._telethon.connect()
+        if not await self._telethon.is_user_authorized():
+            logging.warning("Telegram session is no longer authorized, logging in")
+            await self.start()
 
     async def stop(self):
         if self._telethon.is_connected():

@@ -7,9 +7,11 @@ from telegram_to_rss.attachments import (
     is_unsafe_to_host,
     merge_extra,
 )
+from telethon import errors
 from tortoise.expressions import Q
 from tortoise.transactions import atomic
 from pathlib import Path
+import asyncio
 import logging
 
 
@@ -46,6 +48,11 @@ class TelegramPoller:
         db_feeds_ids = set([feed.id for feed in db_feeds])
 
         feed_ids_to_delete = db_feeds_ids - tg_dialogs_ids
+        if not tg_dialogs_ids and db_feeds_ids:
+            # An empty chat list next to existing feeds is a glitch, not the
+            # user leaving every chat. Don't delete everything because of it.
+            logging.warning("Telegram returned no chats, keeping existing feeds")
+            feed_ids_to_delete = set()
         feed_ids_to_create = tg_dialogs_ids - db_feeds_ids
         feed_ids_to_update = db_feeds_ids.intersection(tg_dialogs_ids)
 
@@ -307,6 +314,20 @@ def parse_feed_entry_id(id: str):
     return int(channel_id), int(message_id)
 
 
+def is_connection_problem(error: BaseException) -> bool:
+    """Errors that hit every feed, so skipping one feed can't help."""
+    return isinstance(
+        error,
+        (
+            ConnectionError,
+            asyncio.TimeoutError,
+            errors.FloodWaitError,
+            errors.ServerError,
+            errors.AuthKeyError,
+        ),
+    )
+
+
 async def reset_feeds_in_db(telegram_poller: TelegramPoller):
     logging.debug("reset_feeds_in_db")
 
@@ -337,7 +358,19 @@ async def update_feeds_in_db(telegram_poller: TelegramPoller):
             feed_to_create.id,
             feed_to_create.name,
         )
-        await telegram_poller.create_feed(feed_to_create)
+        try:
+            await telegram_poller.create_feed(feed_to_create)
+        except Exception as e:
+            if is_connection_problem(e):
+                raise
+            logging.warning(
+                "Skipping new feed %s (%s): %s",
+                feed_to_create.name,
+                feed_to_create.id,
+                e,
+                exc_info=True,
+            )
+            continue
         logging.debug("update_feeds_in_db.create_feed -> done")
 
     for feed_to_update in feeds_to_update:
@@ -346,5 +379,17 @@ async def update_feeds_in_db(telegram_poller: TelegramPoller):
             feed_to_update.id,
             feed_to_update.name,
         )
-        await telegram_poller.update_feed(feed_to_update)
+        try:
+            await telegram_poller.update_feed(feed_to_update)
+        except Exception as e:
+            if is_connection_problem(e):
+                raise
+            logging.warning(
+                "Skipping feed %s (%s) this round: %s",
+                feed_to_update.name,
+                feed_to_update.id,
+                e,
+                exc_info=True,
+            )
+            continue
         logging.debug("update_feeds_in_db.update_feed -> done")
